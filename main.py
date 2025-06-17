@@ -16,6 +16,13 @@ from langchain.tools import Tool
 import threading
 import warnings
 import time # For potential diagnostic sleep
+from rag import process_urls
+from sentence_transformers import SentenceTransformer
+import faiss
+import numpy as np
+from langchain.schema import Document
+
+from langchain.embeddings import HuggingFaceEmbeddings
 
 warnings.filterwarnings("ignore", message="Convert_system_message_to_human will be deprecated!")
 
@@ -77,6 +84,7 @@ class Sim:
             "do_nothing (to rest or observe). "
             "If an object is nearby but not on your spot, your action should be to move to it first (e.g. 'move_east' if apple is east). "
             "If unsure, choose a simple positive action like exploring or 'do_nothing'."
+            "The Sim environment plays in the medieval times, so your actions and interactions should reflect that setting."
         )
 
         self.action_prompt_template = ChatPromptTemplate.from_messages([
@@ -287,23 +295,37 @@ class MijnSimsWereld(SimsWereld):
 
         super().__init__(master)
 
-        try:
-            if os.path.exists("world_data/world_medieval.txt"):
-                loader = TextLoader("world_data/world_medieval.txt", encoding="utf-8")
-                documents = loader.load()
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-                texts = text_splitter.split_documents(documents)
-                if not GOOGLE_API_KEY:
-                    raise ValueError("Google API Key not found for embeddings")
-                embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001", google_api_key=GOOGLE_API_KEY)
-                vectorstore = FAISS.from_documents(texts, embeddings)
-                self.world_knowledge_retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
-                print("INFO: World knowledge base loaded.")
-            else:
-                print("WARNING: world_data/world_medieval.txt not found. No world knowledge will be used.")
-        except Exception as e:
-            print(f"ERROR: Error loading world knowledge: {e}")
-            self.world_knowledge_retriever = None
+        #try:
+        urls = [
+                "https://nl.wikipedia.org/wiki/Middeleeuwen",
+                "https://courses.lumenlearning.com/atd-herkimer-westerncivilization/chapter/daily-medieval-life/#:~:text=For%20peasants%2C%20daily%20medieval%20life,could%20rest%20from%20their%20labors",
+                "https://www.twinkl.com/teaching-wiki/life-like-for-a-medieval-peasant",
+                "https://schoolhistory.co.uk/notes/lifestyle-of-medieval-peasants/"
+            ]
+
+        combined_text = process_urls(urls, chunk_size=500, overlap=50)
+
+        # 2. Maak tekstchunks (zorg dat ze klein genoeg zijn)
+        chunk_size = 500
+        chunks = [combined_text[i:i+chunk_size] for i in range(0, len(combined_text), chunk_size)]
+
+        # 3. Maak Documenten
+        documents = [Document(page_content=chunk) for chunk in chunks]
+
+        # 4. Embedder aanmaken
+        embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+
+        # 5. Vectorstore aanmaken
+        vectorstore = FAISS.from_documents(documents, embedding_model)
+
+        # 6. Retriever ophalen
+        self.world_knowledge_retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
+
+
+        print("✅ Medieval world knowledge loaded and retriever initialized locally with SentenceTransformer.")
+
+        #except Exception as e:
+        #    print(f"🔴 Error initializing RAG for world knowledge locally: {e}")
 
         self.initialiseer_wereld()
         self.draw_grid() # Initial draw
