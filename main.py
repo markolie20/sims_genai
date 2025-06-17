@@ -51,7 +51,7 @@ fun_fact_tool = Tool(
 
 # --- Sim Class Definition ---
 class Sim:
-    def __init__(self, sim_id, icon, x, y, hunger=100, mood="neutral", instructions=None):
+    def __init__(self, sim_id, icon, x, y, hunger=30, mood="neutral", instructions=None):
         self.id = sim_id
         self.icon = icon
         self.x = x
@@ -64,6 +64,8 @@ class Sim:
         self.is_thinking = False
         self.llm_action_result = None
         self._llm_params_cache = {}
+        self.money = 0 
+
 
         self.llm = ChatGoogleGenerativeAI(
             model="gemini-1.5-flash-latest",
@@ -77,13 +79,15 @@ class Sim:
             "Make decisions based on your state (hunger, mood), environment, instructions, messages, world knowledge, and fun facts. "
             "Respond with ONLY ONE of the following action commands: "
             "move_north, move_south, move_east, move_west (to explore), "
-            "eat_apple (if hungry and an apple is at your current location - if adjacent, your action should be to move to it first), " # Clarified eat_apple
-            "use_radio (if at radio or adjacent - move to it first if adjacent), "
-            "interact_object <object_name> (e.g., 'interact_object tree' or 'interact_object bed'), "
+            "eat_apple (if hungry and an apple is at your current location or in an adjacent cell, you can use it without moving), "
+            "use_trumpet (if a trumpet is at your current location or in an adjacent cell—if adjacent, you can use it without moving), "
+            "use_farm (if a farm is at your current location or in an adjacent cell—if adjacent, you can use it without moving), "
+            "interact_object <object_name> (e.g., 'interact_object tree', 'interact_object bed' or 'interact_object farm', you can use it without moving), "
             "communicate_sim <target_sim_id> <friendly_message> (e.g., 'communicate_sim sim_1 Hello!'), "
             "do_nothing (to rest or observe). "
             "If an object is nearby but not on your spot, your action should be to move to it first (e.g. 'move_east' if apple is east). "
-            "If unsure, choose a simple positive action like exploring or 'do_nothing'."
+            "If unsure, choose a simple positive action like exploring."
+            "Try to avoid 'do_nothing' and prefer exploring, eating, communicating, or interacting with objects."
             "The Sim environment plays in the medieval times, so your actions and interactions should reflect that setting."
         )
 
@@ -129,6 +133,8 @@ class Sim:
                 query = f"Sim state: hunger {self.hunger}, mood {self.mood}. Nearby: {nearby_entities_desc}. What's relevant?"
                 docs = world_knowledge_retriever.get_relevant_documents(query)
                 retrieved_knowledge = "\n".join([doc.page_content for doc in docs])
+                #print(f"DEBUG_RAG_CONTEXT for Sim {self.id}:\n{retrieved_knowledge}\n{'-'*40}")
+
             except Exception as e:
                 print(f"ERROR: Retrieving world knowledge for {self.id}: {e}")
                 retrieved_knowledge = "Error retrieving knowledge."
@@ -146,7 +152,7 @@ class Sim:
         
         try:
             formatted_prompt_messages = self.action_prompt_template.format_messages(**prompt_input)
-            print(f"DEBUG_LLM_PROMPT: Sim {self.id} (Autonomous) PROMPT for LLM:\n{'-'*20}\n{formatted_prompt_messages}\n{'-'*20}")
+            #print(f"DEBUG_LLM_PROMPT: Sim {self.id} (Autonomous) PROMPT for LLM:\n{'-'*20}\n{formatted_prompt_messages}\n{'-'*20}")
             response = self.llm.invoke(formatted_prompt_messages)
             print(f"DEBUG_LLM_RESPONSE: Sim {self.id} (Autonomous) RAW LLM RESPONSE: '{response.content}'")
             self.llm_action_result = response.content.strip()
@@ -179,10 +185,10 @@ GRID_SIZE = 15
 SIM_UPDATE_INTERVAL = 4000 # Increased interval further for LLM and debugging
 
 kleuren = {
-    "leeg": "white", "speler": "lightblue", "appel": "red", "radio": "yellow", "muur": "gray"
+    "leeg": "white", "speler": "lightblue", "appel": "red", "trumpet": "yellow", "muur": "gray", "farm": "lightyellow"
 }
 iconen = {
-    "speler": "😊", "appel": "🍎", "radio": "📻", "muur": "🧱", "thinking": "🤔"
+    "speler": "😊", "appel": "🍎", "trumpet": "🎺", "muur": "🧱", "thinking": "🤔", "farm": "🌾"
 }
 
 class SimsWereld:
@@ -297,7 +303,6 @@ class MijnSimsWereld(SimsWereld):
 
         #try:
         urls = [
-                "https://nl.wikipedia.org/wiki/Middeleeuwen",
                 "https://courses.lumenlearning.com/atd-herkimer-westerncivilization/chapter/daily-medieval-life/#:~:text=For%20peasants%2C%20daily%20medieval%20life,could%20rest%20from%20their%20labors",
                 "https://www.twinkl.com/teaching-wiki/life-like-for-a-medieval-peasant",
                 "https://schoolhistory.co.uk/notes/lifestyle-of-medieval-peasants/"
@@ -348,12 +353,15 @@ class MijnSimsWereld(SimsWereld):
                 if random.random() < 0.05:
                     self.grid[y_init][x_init] = {"type": "appel", "icon": iconen["appel"]}
                 elif random.random() < 0.02:
-                    self.grid[y_init][x_init] = {"type": "radio", "icon": iconen["radio"]}
+                    self.grid[y_init][x_init] = {"type": "trumpet", "icon": iconen["trumpet"]}
                 elif self.sim_id_counter < 3 and random.random() < 0.03 : # Limit Sims
                     new_sim = Sim(sim_id=f"sim_{self.sim_id_counter}", icon=speler_icon, x=x_init, y=y_init)
                     self.grid[y_init][x_init] = new_sim
                     self.sim_id_counter += 1
-
+        empty_cells = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if self.grid[y][x] is None]
+        if empty_cells:
+            farm_x, farm_y = random.choice(empty_cells)
+            self.grid[farm_y][farm_x] = {"type": "farm", "icon": iconen["farm"]}
         if self.sim_id_counter == 0:
             placed = False
             empty_spots = []
@@ -392,8 +400,10 @@ class MijnSimsWereld(SimsWereld):
 
                         if isinstance(cell, Sim):
                             descriptions.append(f"Sim {cell.id.split('_')[-1]} ({cell.icon}) at {relative_pos}")
+                            print(f"DEBUG_NEARBY: Found Sim {cell.id} at {relative_pos} for Sim at ({sim_x},{sim_y})")
                         elif isinstance(cell, dict) and 'type' in cell:
-                            descriptions.append(f"{cell['type']} at {relative_pos}")
+                            descriptions.append(f"To your {relative_pos}: {cell['type']} (you can use it from here if it's an apple, trumpet or farm)")
+                            print(f"DEBUG_NEARBY: Found {cell['type']} at {relative_pos} for Sim at ({sim_x},{sim_y})")
         return ", ".join(descriptions) if descriptions else "nothing specific nearby"
 
     def initiate_sim_llm_decisions(self):
@@ -439,7 +449,7 @@ class MijnSimsWereld(SimsWereld):
                 system_instruction_prompt = (
                     "You are a Sim. Follow the user's instruction. Stay positive and safe. "
                     "Respond with ONLY ONE action command from the list: move_north, move_south, move_east, move_west, "
-                    "eat_apple, use_radio, interact_object <object_name>, "
+                    "eat_apple, use_trumpet, use_farm, interact_object <object_name>, "
                     "communicate_sim <target_sim_id> <message>, do_nothing."
                 )
                 human_message_content = (
@@ -455,7 +465,7 @@ class MijnSimsWereld(SimsWereld):
                 ]
                 def run_instruction_llm_closure(sim_to_act, messages_for_llm):
                     try:
-                        print(f"DEBUG_LLM_PROMPT: Sim {sim_to_act.id} (Instruction) PROMPT for LLM:\n{'-'*20}\n{messages_for_llm}\n{'-'*20}")
+                        #print(f"DEBUG_LLM_PROMPT: Sim {sim_to_act.id} (Instruction) PROMPT for LLM:\n{'-'*20}\n{messages_for_llm}\n{'-'*20}")
                         response = sim_to_act.llm.invoke(messages_for_llm)
                         print(f"DEBUG_LLM_RESPONSE: Sim {sim_to_act.id} (Instruction) RAW LLM RESPONSE: '{response.content}'")
                         sim_to_act.llm_action_result = response.content.strip()
@@ -477,6 +487,7 @@ class MijnSimsWereld(SimsWereld):
                 # This Sim is not thinking and has no pending result, so start a new thought.
                 print(f"INFO: Sim {current_sim.id} initiating autonomous decision.")
                 nearby_desc = self.get_nearby_objects_description(current_sim.x, current_sim.y)
+                print(f"DEBUG_INITIATE_DECISIONS: Sim {current_sim.id} nearby description: '{nearby_desc}'")
                 current_sim.prepare_llm_decision_params(nearby_desc, self.world_knowledge_retriever, self.current_fun_fact)
                 current_sim.start_llm_decision_thread() # This sets is_thinking=True and llm_action_result=None
 
@@ -500,7 +511,8 @@ class MijnSimsWereld(SimsWereld):
         elif command == "move_east": parsed_action = {"type": "move_east"}
         elif command == "move_west": parsed_action = {"type": "move_west"}
         elif command == "eat_apple": parsed_action = {"type": "eat_apple"}
-        elif command == "use_radio": parsed_action = {"type": "use_radio"}
+        elif command == "use_trumpet": parsed_action = {"type": "use_trumpet"}
+        elif command == "use_farm": parsed_action = {"type": "use_farm"}
         elif command == "do_nothing": parsed_action = {"type": "do_nothing"}
         elif command == "interact_object" and len(parts) > 1:
             parsed_action = {"type": "interact_object", "object_name": " ".join(parts[1:])}
@@ -594,7 +606,6 @@ class MijnSimsWereld(SimsWereld):
                     ate_apple = False
                     found_apple_to_eat = False
                     best_apple_pos = None
-                    apple_dx, apple_dy = 0,0
                     for dy_check in [-1, 0, 1]: 
                         for dx_check in [-1, 0, 1]:
                             if dx_check == 0 and dy_check == 0: continue 
@@ -604,19 +615,16 @@ class MijnSimsWereld(SimsWereld):
                                 cell_to_check = self.grid[check_y][check_x]
                                 if isinstance(cell_to_check, dict) and cell_to_check.get("type") == "appel":
                                     best_apple_pos = (check_x, check_y)
-                                    apple_dx, apple_dy = dx_check, dy_check
                                     found_apple_to_eat = True
                                     break
                         if found_apple_to_eat: break
                     if found_apple_to_eat and best_apple_pos:
-                        if move_sim_on_grid(self, sim, apple_dx, apple_dy): 
-                            sim.hunger += 50
-                            if sim.hunger > 100: sim.hunger = 100
-                            log_message += f" -> Moved to ({sim.x},{sim.y}) and ate apple."
-                            ate_apple = True
-                        else:
-                            log_message += f" -> Found adjacent apple at {best_apple_pos} for eating, but failed to move to it."
-                            executed_successfully = False 
+                        # Remove the apple from the grid (eat it)
+                        self.grid[best_apple_pos[1]][best_apple_pos[0]] = None
+                        sim.hunger += 50
+                        if sim.hunger > 100: sim.hunger = 100
+                        log_message += f" -> Ate apple at ({best_apple_pos[0]},{best_apple_pos[1]})."
+                        ate_apple = True
                     else: 
                         log_message += " -> Tried to eat apple, but no adjacent apple found."
                         executed_successfully = False
@@ -638,7 +646,16 @@ class MijnSimsWereld(SimsWereld):
                         executed_successfully = False
                 elif action_type == "interact_object":
                     obj_name = parsed_details.get("object_name", "unknown")
-                    log_message += f" -> Interacted with {obj_name}." 
+                    log_message += f" -> Interacted with {obj_name}."
+                elif action_type == "use_trumpet":
+                    sim.mood = "excited"
+                    log_message += " -> Used the trumpet 🎺! Mood is now excited."
+                elif action_type == "use_farm":
+                    sim.mood = "happy"
+                    sim.hunger = max(0, sim.hunger - 10)
+                    sim.money += 5
+                    log_message += f" -> Worked on the farm, mood is now {sim.mood}, hunger decreased to {sim.hunger}, money increased to {sim.money}."
+                
                 elif action_type == "do_nothing":
                     log_message += " -> Did nothing."
                 else: 
@@ -676,7 +693,7 @@ if __name__ == "__main__":
         with open("world_data/world_medieval.txt", "w", encoding="utf-8") as f:
             f.write("A knight should be brave.\n")
             f.write("Apples are good food for energy.\n")
-            f.write("Radios play music and news.\n")
+            f.write("Trumpets play music and news.\n")
             f.write("Exploring new places is fun.\n")
             f.write("It is polite to greet others.\n")
     print("Reminder: Ensure you have a .env file with your GOOGLE_API_KEY for Sim behavior.")
