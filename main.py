@@ -43,6 +43,7 @@ def fetch_random_fun_fact(_input: str = "") -> str:
     except (KeyError, TypeError) as e:
         return "API Error: Fun fact format was unexpected."
 
+# Tool object for fun fact fetching, can be used by LLMs
 fun_fact_tool = Tool(
     name="FunFactFetcher",
     func=fetch_random_fun_fact,
@@ -52,6 +53,7 @@ fun_fact_tool = Tool(
 # --- Sim Class Definition ---
 class Sim:
     def __init__(self, sim_id, icon, x, y, hunger=30, mood="neutral", instructions=None):
+        # Sim state initialization
         self.id = sim_id
         self.icon = icon
         self.x = x
@@ -66,13 +68,14 @@ class Sim:
         self._llm_params_cache = {}
         self.money = 0 
 
-
+        # LLM setup for Sim's decision making
         self.llm = ChatGoogleGenerativeAI(
             model="gemini-1.5-flash-latest",
             google_api_key=GOOGLE_API_KEY,
             temperature=0.7,
         )
 
+        # System prompt for the Sim's LLM
         new_system_message_content = (
             "You are a friendly and curious Sim living in a 2D world. "
             "Your goal is to explore, learn, and interact positively. Always be kind and safe. "
@@ -91,6 +94,7 @@ class Sim:
             "The Sim environment plays in the medieval times, so your actions and interactions should reflect that setting."
         )
 
+        # Prompt template for LLM input
         self.action_prompt_template = ChatPromptTemplate.from_messages([
             SystemMessage(content=new_system_message_content),
             HumanMessagePromptTemplate.from_template(
@@ -108,16 +112,18 @@ class Sim:
         ])
 
     def __str__(self):
+        # String representation for debugging/logging
         return f"Sim({self.id}, {self.icon} at ({self.x},{self.y}), H:{self.hunger}, M:{self.mood}, Act:{self.current_action}, Think:{self.is_thinking}, Res:'{self.llm_action_result}')"
 
-
     def prepare_llm_decision_params(self, nearby_entities_desc, world_knowledge_retriever, current_fun_fact):
+        # Cache parameters for LLM decision making
         self._llm_params_cache['nearby_entities_desc'] = nearby_entities_desc
         self._llm_params_cache['world_knowledge_retriever'] = world_knowledge_retriever
         self._llm_params_cache['current_fun_fact'] = current_fun_fact
 
     def _run_llm_decision_in_thread(self):
         # print(f"DEBUG_THREAD_START: Sim {self.id} _run_llm_decision_in_thread.")
+        # Runs the LLM decision logic in a background thread
         nearby_entities_desc = self._llm_params_cache.get('nearby_entities_desc')
         world_knowledge_retriever = self._llm_params_cache.get('world_knowledge_retriever')
         current_fun_fact = self._llm_params_cache.get('current_fun_fact')
@@ -125,11 +131,11 @@ class Sim:
         formatted_messages = "No new messages."
         if self.inbox:
             formatted_messages = "\n".join([f"From {sender_id}: '{text}'" for sender_id, text in self.inbox])
-            # self.inbox.clear() # Clear inbox AFTER using messages for prompt
 
         retrieved_knowledge = ""
         if world_knowledge_retriever:
             try:
+                # Query the retriever for relevant world knowledge
                 query = f"Sim state: hunger {self.hunger}, mood {self.mood}. Nearby: {nearby_entities_desc}. What's relevant?"
                 docs = world_knowledge_retriever.get_relevant_documents(query)
                 retrieved_knowledge = "\n".join([doc.page_content for doc in docs])
@@ -139,6 +145,7 @@ class Sim:
                 print(f"ERROR: Retrieving world knowledge for {self.id}: {e}")
                 retrieved_knowledge = "Error retrieving knowledge."
 
+        # Prepare prompt input for the LLM
         prompt_input = {
             "hunger": self.hunger,
             "mood": self.mood,
@@ -151,6 +158,7 @@ class Sim:
         }
         
         try:
+            # Format and send prompt to LLM, get response
             formatted_prompt_messages = self.action_prompt_template.format_messages(**prompt_input)
             #print(f"DEBUG_LLM_PROMPT: Sim {self.id} (Autonomous) PROMPT for LLM:\n{'-'*20}\n{formatted_prompt_messages}\n{'-'*20}")
             response = self.llm.invoke(formatted_prompt_messages)
@@ -167,6 +175,7 @@ class Sim:
             # print(f"DEBUG_THREAD_END: Sim {self.id} _run_llm_decision_in_thread, is_thinking now: {self.is_thinking}.")
 
     def start_llm_decision_thread(self):
+        # Start the LLM decision thread if not already thinking
         if not self.is_thinking:
             self.llm_action_result = None # Clear previous result first
             self.is_thinking = True       # Then indicate thinking
@@ -182,8 +191,9 @@ class Sim:
 # --- GUI Setup ---
 CELL_SIZE = 40
 GRID_SIZE = 15
-SIM_UPDATE_INTERVAL = 4000 # Increased interval further for LLM and debugging
+SIM_UPDATE_INTERVAL = 4000 # ms between Sim updates
 
+# Color and icon mapping for grid objects
 kleuren = {
     "leeg": "white", "speler": "lightblue", "appel": "red", "trumpet": "yellow", "muur": "gray", "farm": "lightyellow"
 }
@@ -193,6 +203,7 @@ iconen = {
 
 class SimsWereld:
     def __init__(self, master):
+        # Set up the grid and canvas for the world
         self.master = master
         self.canvas = tk.Canvas(master, width=CELL_SIZE*GRID_SIZE, height=CELL_SIZE*GRID_SIZE, bg="lightgreen")
         self.canvas.pack()
@@ -200,6 +211,7 @@ class SimsWereld:
         self.canvas.bind("<Button-1>", self.on_canvas_click)
 
     def draw_grid(self):
+        # Draw the grid and all objects/Sims on the canvas
         self.canvas.delete("all")
         for y_draw in range(GRID_SIZE):
             for x_draw in range(GRID_SIZE):
@@ -224,6 +236,7 @@ class SimsWereld:
                 if icon_to_draw:
                     self.canvas.create_text(x1 + CELL_SIZE // 2, y1 + CELL_SIZE // 2, text=icon_to_draw, font=("Arial", 16), fill=text_color)
         
+        # Draw Sim info (ID and hunger) on top of Sim cells
         for y_draw in range(GRID_SIZE):
             for x_draw in range(GRID_SIZE):
                 cell_content = self.grid[y_draw][x_draw]
@@ -238,6 +251,7 @@ class SimsWereld:
                     )
 
     def on_canvas_click(self, event):
+        # Handle clicks on the grid: allow user to instruct Sims
         grid_x, grid_y = event.x // CELL_SIZE, event.y // CELL_SIZE
         if 0 <= grid_x < GRID_SIZE and 0 <= grid_y < GRID_SIZE:
             cell_content = self.grid[grid_y][grid_x]
@@ -250,25 +264,22 @@ class SimsWereld:
                 print(f"INFO: Clicked empty cell or object at ({grid_x}, {grid_y})")
 
     def instrueer(self, sim, instructie):
+        # Add a user instruction to a Sim
         if sim:
             sim.instructions.append(instructie)
             print(f"INFO: Instructed Sim {sim.id}: {instructie}")
 
     def update_sims(self):
+        # Main update loop: initiate LLM decisions, process actions, redraw grid
         print("\n--- TICK START ---")
         self.initiate_sim_llm_decisions()
-        
-        # Optional: Short delay to allow threads to potentially complete
-        # This is a HACK for diagnosis, not a robust solution.
-        # If this "fixes" it, it points to a race condition.
-        # time.sleep(0.2) 
-        
         self.process_pending_sim_actions()
         self.draw_grid()
         print("--- TICK END ---\n")
         self.master.after(SIM_UPDATE_INTERVAL, self.update_sims)
 
 def move_sim_on_grid(world: 'MijnSimsWereld', sim: Sim, dx: int, dy: int) -> bool:
+    # Attempt to move a Sim by (dx, dy) if the target cell is empty
     new_x = sim.x + dx
     new_y = sim.y + dy
     # print(f"DEBUG_MOVE: move_sim_on_grid for {sim.id}: current ({sim.x},{sim.y}), trying ({new_x},{new_y}) with ({dx},{dy})")
@@ -293,6 +304,7 @@ def move_sim_on_grid(world: 'MijnSimsWereld', sim: Sim, dx: int, dy: int) -> boo
 
 class MijnSimsWereld(SimsWereld):
     def __init__(self, master):
+        # Initialize world, load RAG knowledge, and set up Sims and objects
         self.sim_id_counter = 0
         self.world_knowledge_retriever = None
         self.current_fun_fact = "No fun fact fetched yet."
@@ -301,51 +313,38 @@ class MijnSimsWereld(SimsWereld):
 
         super().__init__(master)
 
-        #try:
+        # Load medieval world knowledge using RAG pipeline
         urls = [
                 "https://courses.lumenlearning.com/atd-herkimer-westerncivilization/chapter/daily-medieval-life/#:~:text=For%20peasants%2C%20daily%20medieval%20life,could%20rest%20from%20their%20labors",
                 "https://www.twinkl.com/teaching-wiki/life-like-for-a-medieval-peasant",
                 "https://schoolhistory.co.uk/notes/lifestyle-of-medieval-peasants/"
             ]
-
         combined_text = process_urls(urls, chunk_size=500, overlap=50)
-
-        # 2. Maak tekstchunks (zorg dat ze klein genoeg zijn)
         chunk_size = 500
         chunks = [combined_text[i:i+chunk_size] for i in range(0, len(combined_text), chunk_size)]
-
-        # 3. Maak Documenten
         documents = [Document(page_content=chunk) for chunk in chunks]
-
-        # 4. Embedder aanmaken
         embedding_model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-
-        # 5. Vectorstore aanmaken
         vectorstore = FAISS.from_documents(documents, embedding_model)
-
-        # 6. Retriever ophalen
         self.world_knowledge_retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
-
-
-        print("✅ Medieval world knowledge loaded and retriever initialized locally with SentenceTransformer.")
-
-        #except Exception as e:
-        #    print(f"🔴 Error initializing RAG for world knowledge locally: {e}")
+        print("Medieval world knowledge loaded and retriever initialized locally with SentenceTransformer.")
 
         self.initialiseer_wereld()
         self.draw_grid() # Initial draw
         self.master.after(SIM_UPDATE_INTERVAL, self.update_sims) # Start update loop
 
     def initialiseer_wereld(self):
+        # Fill the grid with walls, apples, trumpets, Sims, and one farm at a random empty spot
         self.grid = [[None for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
         self.sim_id_counter = 0
         speler_icon = iconen["speler"]
 
+        # Place random walls
         for _ in range(GRID_SIZE * 2): 
             wx, wy = random.randint(0, GRID_SIZE-1), random.randint(0, GRID_SIZE-1)
             if self.grid[wy][wx] is None:
                  self.grid[wy][wx] = {"type": "muur", "icon": iconen["muur"]}
 
+        # Place apples, trumpets, and Sims randomly
         for y_init in range(GRID_SIZE):
             for x_init in range(GRID_SIZE):
                 if self.grid[y_init][x_init] is not None: continue
@@ -358,10 +357,12 @@ class MijnSimsWereld(SimsWereld):
                     new_sim = Sim(sim_id=f"sim_{self.sim_id_counter}", icon=speler_icon, x=x_init, y=y_init)
                     self.grid[y_init][x_init] = new_sim
                     self.sim_id_counter += 1
+        # Place one farm at a random empty location
         empty_cells = [(x, y) for y in range(GRID_SIZE) for x in range(GRID_SIZE) if self.grid[y][x] is None]
         if empty_cells:
             farm_x, farm_y = random.choice(empty_cells)
             self.grid[farm_y][farm_x] = {"type": "farm", "icon": iconen["farm"]}
+        # Ensure at least one Sim is placed
         if self.sim_id_counter == 0:
             placed = False
             empty_spots = []
@@ -379,8 +380,8 @@ class MijnSimsWereld(SimsWereld):
             if not placed: print("ERROR: Could not place initial Sim, grid might be full of walls or too small.")
         print(f"INFO: Initialized world with {self.sim_id_counter} Sims.")
 
-
     def get_nearby_objects_description(self, sim_x, sim_y):
+        # Describe all objects and Sims adjacent to the given position
         descriptions = []
         for dy_offset in [-1, 0, 1]:
             for dx_offset in [-1, 0, 1]:
@@ -407,6 +408,7 @@ class MijnSimsWereld(SimsWereld):
         return ", ".join(descriptions) if descriptions else "nothing specific nearby"
 
     def initiate_sim_llm_decisions(self):
+        # Start LLM decision threads for all Sims that need a new action
         print("DEBUG_INITIATE_DECISIONS: Starting to initiate decisions...")
         self.fact_fetch_countdown -= 1
         if self.fact_fetch_countdown <= 0:
@@ -428,10 +430,8 @@ class MijnSimsWereld(SimsWereld):
         else:
             print(f"DEBUG_INITIATE_DECISIONS: Sims needing new decisions initiated: {[s.id for s in sims_needing_decision_initiation]}")
 
-        # random.shuffle(sims_needing_decision_initiation) # Shuffling here is less critical
-
         for current_sim in sims_needing_decision_initiation:
-            current_sim.hunger -= 1 # Hunger decreases even if just starting to think
+            current_sim.hunger -= 1 # Hunger decreases every tick
             if current_sim.hunger < 0: current_sim.hunger = 0
             if current_sim.hunger < 30 and current_sim.mood != "hungry":
                 current_sim.mood = "hungry"
@@ -439,13 +439,9 @@ class MijnSimsWereld(SimsWereld):
                 current_sim.mood = "neutral"
 
             if current_sim.instructions:
+                # If Sim has instructions, use those for LLM prompt
                 instruction = current_sim.instructions.pop(0) 
                 print(f"INFO: Sim {current_sim.id} initiating instruction-based decision: {instruction}")
-                # ... (rest of instruction LLM setup and thread start is the same)
-                # Ensure sim.llm_action_result is None before starting the thread if not already handled by start_llm_decision_thread
-                # current_sim.llm_action_result = None # This is handled by start_llm_decision_thread or instruction specific setup
-                
-                # Instruction specific LLM call setup
                 system_instruction_prompt = (
                     "You are a Sim. Follow the user's instruction. Stay positive and safe. "
                     "Respond with ONLY ONE action command from the list: move_north, move_south, move_east, move_west, "
@@ -484,7 +480,7 @@ class MijnSimsWereld(SimsWereld):
                 t.start()
 
             else: # Autonomous action
-                # This Sim is not thinking and has no pending result, so start a new thought.
+                # No instructions, let Sim decide based on environment
                 print(f"INFO: Sim {current_sim.id} initiating autonomous decision.")
                 nearby_desc = self.get_nearby_objects_description(current_sim.x, current_sim.y)
                 print(f"DEBUG_INITIATE_DECISIONS: Sim {current_sim.id} nearby description: '{nearby_desc}'")
@@ -493,8 +489,8 @@ class MijnSimsWereld(SimsWereld):
 
         print("DEBUG_INITIATE_DECISIONS: Finished initiating decisions for this tick.")
 
-
     def parse_llm_action(self, action_text: str, sim: Sim) -> dict:
+        # Parse the LLM's action output into a structured action dict
         original_raw_text = action_text 
         processed_text = action_text.lower().strip().replace(".", "").replace("'", "")
         parts = processed_text.split()
@@ -506,6 +502,7 @@ class MijnSimsWereld(SimsWereld):
 
         command = parts[0]
         
+        # Map command to action type
         if command == "move_north": parsed_action = {"type": "move_north"}
         elif command == "move_south": parsed_action = {"type": "move_south"}
         elif command == "move_east": parsed_action = {"type": "move_east"}
@@ -532,12 +529,10 @@ class MijnSimsWereld(SimsWereld):
         
         if parsed_action["type"] == "do_nothing" and command not in ["do_nothing", ""] and original_raw_text.strip() != "":
              print(f"{log_prefix} Command '{command}' or full text '{original_raw_text}' not fully parsed to specific action, result: {parsed_action}")
-        # else:
-             # print(f"{log_prefix} Result: {parsed_action}")
         return parsed_action
 
-
     def find_sim_by_id(self, sim_id_to_find: str) -> Sim | None:
+        # Find a Sim object in the grid by its ID
         for r_idx in range(GRID_SIZE):
             for c_idx in range(GRID_SIZE):
                 cell = self.grid[r_idx][c_idx]
@@ -546,10 +541,12 @@ class MijnSimsWereld(SimsWereld):
         return None
 
     def process_pending_sim_actions(self):
+        # Process all Sims that have completed their LLM decision and are ready to act
         print(f"DEBUG_PROCESS_ACTIONS: --- Entering process_pending_sim_actions ---")
-        sims_to_process_action = [] # Renamed for clarity
+        sims_to_process_action = []
         sim_details_for_log = [] 
 
+        # Collect Sims ready to act
         for r_idx in range(GRID_SIZE):
             for c_idx in range(GRID_SIZE):
                 cell = self.grid[r_idx][c_idx]
@@ -577,12 +574,8 @@ class MijnSimsWereld(SimsWereld):
 
         for sim in sims_to_process_action:
             print(f"DEBUG_PROCESS_ACTIONS: Processing action for Sim {sim.id}. Current llm_action_result: '{sim.llm_action_result}'")
-            # This check is somewhat redundant due to the collection logic but safe
             if sim.llm_action_result and not sim.is_thinking:
                 raw_action_text = sim.llm_action_result
-                # CRUCIAL: Consume the result AFTER processing it.
-                # sim.llm_action_result = None # MOVED: Set to None AFTER successful parse/execution attempt
-
                 parsed_details = self.parse_llm_action(raw_action_text, sim)
                 action_type = parsed_details.get("type", "do_nothing")
                 
@@ -591,9 +584,7 @@ class MijnSimsWereld(SimsWereld):
                 executed_successfully = True # Assume success initially for this action
                 original_x, original_y = sim.x, sim.y
 
-                # ... (rest of the action execution logic: move_north, eat_apple, etc. REMAINS THE SAME)
-                # ... make sure this logic is correct as per your game rules.
-                # ...
+                # Handle each action type
                 if action_type == "move_north":
                     if not move_sim_on_grid(self, sim, 0, -1): executed_successfully = False
                 elif action_type == "move_south":
@@ -603,6 +594,7 @@ class MijnSimsWereld(SimsWereld):
                 elif action_type == "move_west":
                     if not move_sim_on_grid(self, sim, -1, 0): executed_successfully = False
                 elif action_type == "eat_apple":
+                    # Eat apple from adjacent cell without moving
                     ate_apple = False
                     found_apple_to_eat = False
                     best_apple_pos = None
@@ -629,6 +621,7 @@ class MijnSimsWereld(SimsWereld):
                         log_message += " -> Tried to eat apple, but no adjacent apple found."
                         executed_successfully = False
                 elif action_type == "communicate_sim":
+                    # Send a message to another Sim
                     target_id = parsed_details.get("target_sim_id")
                     msg_text = parsed_details.get("message")
                     if target_id and msg_text:
@@ -645,23 +638,24 @@ class MijnSimsWereld(SimsWereld):
                         log_message += f" -> Invalid communicate_sim."
                         executed_successfully = False
                 elif action_type == "interact_object":
+                    # Generic interaction with an object (e.g., farm)
                     obj_name = parsed_details.get("object_name", "unknown")
                     log_message += f" -> Interacted with {obj_name}."
                 elif action_type == "use_trumpet":
+                    # Use trumpet: improve mood
                     sim.mood = "excited"
                     log_message += " -> Used the trumpet 🎺! Mood is now excited."
                 elif action_type == "use_farm":
+                    # Use farm: improve mood, reduce hunger, earn money
                     sim.mood = "happy"
                     sim.hunger = max(0, sim.hunger - 10)
                     sim.money += 5
                     log_message += f" -> Worked on the farm, mood is now {sim.mood}, hunger decreased to {sim.hunger}, money increased to {sim.money}."
-                
                 elif action_type == "do_nothing":
                     log_message += " -> Did nothing."
                 else: 
                     log_message += f" -> Unknown action '{action_type}'"
                     executed_successfully = False
-
 
                 if executed_successfully:
                     sim.current_action = action_type
@@ -671,14 +665,13 @@ class MijnSimsWereld(SimsWereld):
                 sim.llm_action_result = None # Mark action as consumed/attempted
                 print(log_message)
             else:
-                # This case should ideally not be hit if collection logic is correct
                 print(f"DEBUG_PROCESS_ACTIONS: Sim {sim.id} was in list but llm_action_result is None or is_thinking is True. Skipping. State: {str(sim)}")
-
 
         print(f"DEBUG_PROCESS_ACTIONS: --- Exiting process_pending_sim_actions ---")
 
 # --- Main GUI Setup ---
 def main_gui():
+    # Start the Tkinter GUI and Sims world
     root = tk.Tk()
     root.title("Sims World")
     world_frame = tk.Frame(root)
@@ -687,6 +680,7 @@ def main_gui():
     root.mainloop()
 
 if __name__ == "__main__":
+    # Ensure world data directory and file exist
     if not os.path.exists("world_data"):
         os.makedirs("world_data")
     if not os.path.exists("world_data/world_medieval.txt"):
